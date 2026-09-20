@@ -125,9 +125,6 @@ anything, so `hypr.lua` polls the registry every 10s and unloads itself.
 
 - `omarchy-toggle-bar` reads backwards: its argument names a flag called
   `bar-off`, so `omarchy-toggle-bar on` **hides** the bar.
-- One key can't both enter and leave a submap unless the bind is
-  `submap_universal` ([Hyprland#14733][1]). `SUPER + SHIFT + F12` exists as a
-  fallback because a submap-only bind can't be verified without pressing it.
 - Auto-disarm is debounced 600ms; without it a notification stealing focus for
   an instant drops the mode mid-game.
 - Quickshell caches compiled QML. After editing `Service.qml`, `rescanPlugins`
@@ -137,5 +134,3 @@ anything, so `hypr.lua` polls the registry every 10s and unloads itself.
 ## License
 
 [MIT](LICENSE)
-
-[1]: https://github.com/hyprwm/Hyprland/discussions/14733
