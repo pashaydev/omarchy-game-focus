@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "pashadev.game-focus",
+  "name": "Game Focus",
+  "version": "1.0.0",
+  "author": "pashadev",
+  "license": "MIT",
+  "description": "Releases Hyprland's keyboard and mouse grabs to fullscreen games, then restores them. The behaviour lives in Hyprland; this service is the registry entry, so enabling or disabling it here loads or unloads that module.",
+  "kinds": ["service"],
+  "keepLoaded": true,
+  "entryPoints": { "service": "Service.qml" }
+}

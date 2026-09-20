@@ -1,0 +1,3 @@
+// Toggle > Game Focus row. install.sh splices this into
+// ~/.config/omarchy/extensions/omarchy-menu.jsonc.
+  "trigger.toggle.game-focus": {"icon":"","label":"Game Focus","description":"Release Hyprland's key and mouse grabs to fullscreen games","action":"omarchy-game-focus toggle-enabled","checked":"omarchy-game-focus is-enabled"},

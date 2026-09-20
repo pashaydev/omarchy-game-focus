@@ -1,0 +1,178 @@
+#!/bin/bash
+
+# Game Focus control.
+#
+# Two separate ideas, deliberately:
+#   enable/disable  -- whether the Hyprland module is loaded at all
+#   on/off/toggle   -- whether the mode is armed right now (same as SUPER + F12)
+#
+# The Omarchy shell's plugin registry is the single source of truth for
+# "enabled": a third-party plugin is enabled iff its id appears in shell.json,
+# which is what `omarchy plugin enable|disable` writes. So those commands and
+# these are two doors onto one switch.
+
+set -uo pipefail
+
+PLUGIN_ID="pashadev.game-focus"
+SHELL_JSON="$HOME/.config/omarchy/shell.json"
+ARMED_FLAG="game-focus"
+HID_BAR_FLAG="game-focus-hid-bar"
+LOADED_MARKER="Toggle game focus mode" # a bind description, present iff loaded
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: omarchy-game-focus <command>
+
+Plugin:
+  enable          Load it and reload Hyprland
+  disable         Unload it (disarms first if armed) and reload Hyprland
+  toggle-enabled  Flip between the two
+  is-enabled      Exit 0 when enabled; used by the menu checkmark
+  reconcile       Make Hyprland agree with the registry
+  status          Show enabled / loaded / armed
+
+Mode (only while enabled):
+  on              Arm now (same as SUPER + F12)
+  off             Disarm now
+  toggle          Flip it
+EOF
+  exit 1
+}
+
+# Fail open: a missing or unparseable shell.json should not silently make the
+# feature vanish mid-session.
+is_enabled() {
+  if [[ ! -r $SHELL_JSON ]] || ! jq -e . "$SHELL_JSON" >/dev/null 2>&1; then
+    echo "omarchy-game-focus: cannot read $SHELL_JSON; assuming enabled" >&2
+    return 0
+  fi
+  jq -e --arg id "$PLUGIN_ID" '(.plugins // []) | any(.id == $id)' "$SHELL_JSON" >/dev/null
+}
+
+# Read from the live bind table rather than a flag, so it cannot go stale.
+is_loaded() {
+  hyprctl binds -j 2>/dev/null |
+    jq -e --arg d "$LOADED_MARKER" 'any(.description == $d)' >/dev/null 2>&1
+}
+
+is_armed() { omarchy-toggle-enabled "$ARMED_FLAG"; }
+
+# Evaluate an expression inside Hyprland's Lua state. hyprctl wraps the input in
+# `return hl.dispatch(<input>)`, so it must return a dispatcher -- which is why
+# the Lua entry point returns hl.dsp.no_op().
+mode() {
+  local out
+  out=$(hyprctl dispatch "omarchy_game_focus('$1')" 2>&1)
+  [[ $out == ok* ]] || {
+    echo "hyprland refused the call: $out" >&2
+    return 1
+  }
+}
+
+# Undo the module's side effects without its help, for when it is gone or wedged.
+# Disabling must never strand the desktop with a live submap or a hidden bar.
+force_unpick() {
+  hyprctl dispatch 'hl.dsp.submap("reset")' >/dev/null 2>&1
+  omarchy-toggle-enabled "$HID_BAR_FLAG" && omarchy-toggle-bar off
+  omarchy-toggle "$ARMED_FLAG" off
+  omarchy-toggle "$HID_BAR_FLAG" off
+}
+
+disarm_if_armed() {
+  is_armed || return 0
+  mode off || force_unpick
+}
+
+# enable and disable differ only in direction and in disarming first.
+set_enabled() {
+  local want="$1" verb="$2"
+  if [[ $want == true ]] && is_enabled; then
+    echo "Game Focus is already enabled."
+    return 0
+  fi
+  if [[ $want == false ]]; then
+    is_enabled || {
+      echo "Game Focus is already disabled."
+      return 0
+    }
+    # Disarm while the module is still loaded to undo its own changes.
+    disarm_if_armed
+  fi
+  omarchy plugin "$verb" "$PLUGIN_ID" >/dev/null || {
+    echo "could not $verb $PLUGIN_ID; try: omarchy-shell shell rescanPlugins" >&2
+    return 1
+  }
+  # Reloading is what loads or drops the module: its config calls either run or
+  # stop running.
+  hyprctl reload >/dev/null
+}
+
+case "${1:-status}" in
+enable)
+  set_enabled true enable && echo "Game Focus enabled. Toggle the mode with SUPER + F12."
+  ;;
+
+disable)
+  set_enabled false disable && echo "Game Focus disabled. Nothing from it is loaded."
+  ;;
+
+toggle-enabled)
+  if is_enabled; then exec "$0" disable; else exec "$0" enable; fi
+  ;;
+
+is-enabled)
+  is_enabled
+  ;;
+
+# Called by the shell service on load. The service running is itself proof that
+# the plugin is enabled, so this does NOT re-check the registry to decide: the
+# shell instantiates the component in the same instant it writes shell.json, and
+# reading it here loses that race and reports "disabled" every time. It does
+# still wait for the write, because hypr.lua reads the same file -- reloading
+# early would just load a module that decides it is disabled.
+ensure-loaded)
+  for _ in $(seq 1 25); do
+    is_enabled 2>/dev/null && break
+    sleep 0.2
+  done
+  is_enabled 2>/dev/null || {
+    echo "service started but the registry never showed it enabled" >&2
+    exit 1
+  }
+  exec "$0" reconcile
+  ;;
+
+# Make Hyprland agree with the registry, whichever way they disagree.
+reconcile)
+  if is_enabled; then
+    is_loaded && echo "already in sync (enabled, loaded)" && exit 0
+    hyprctl reload >/dev/null
+    echo "loaded into Hyprland"
+  else
+    is_loaded || { echo "already in sync (disabled, not loaded)" && exit 0; }
+    disarm_if_armed
+    hyprctl reload >/dev/null
+    echo "unloaded from Hyprland"
+  fi
+  ;;
+
+status)
+  is_enabled && echo "plugin : enabled   (registry: $PLUGIN_ID)" ||
+    echo "plugin : disabled  (registry: $PLUGIN_ID)"
+  is_loaded && echo "hypr   : loaded" || echo "hypr   : not loaded"
+  is_armed && echo "mode   : ARMED (submap: $(hyprctl submap 2>/dev/null))" ||
+    echo "mode   : idle"
+  ;;
+
+on | off | toggle)
+  is_enabled || {
+    echo "Game Focus is disabled. Enable it first: omarchy-game-focus enable" >&2
+    exit 1
+  }
+  mode "$1"
+  ;;
+
+*)
+  usage
+  ;;
+esac
