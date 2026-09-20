@@ -1,0 +1,89 @@
+#!/bin/bash
+
+# Install Game Focus.
+#
+# Most of the plugin is just the plugin directory, which `omarchy plugin add`
+# already puts in place. This script does the three things that live outside it:
+# the hyprland.lua loader line, the menu row, and a CLI symlink on PATH.
+#
+# Safe to re-run; every step is idempotent.
+
+set -euo pipefail
+
+SRC="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_ID="pashadev.game-focus"
+PLUGIN_DIR="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
+HYPRLAND_LUA="$HOME/.config/hypr/hyprland.lua"
+MENU="$HOME/.config/omarchy/extensions/omarchy-menu.jsonc"
+BIN_DIR="$HOME/.local/bin"
+MARKER="omarchy-game-focus" # identifies our lines in files we share with others
+
+echo "==> 1. Validating the plugin"
+omarchy plugin validate "$SRC"
+
+echo "==> 2. Installing to $PLUGIN_DIR"
+if [[ $SRC != "$PLUGIN_DIR" ]]; then
+  # Copy, never symlink: omarchy-plugin-validate rejects symlinks inside a
+  # plugin directory. When `omarchy plugin add` cloned us we are already here,
+  # and this is skipped.
+  mkdir -p "$PLUGIN_DIR/extensions"
+  cp -f "$SRC/manifest.json" "$SRC/Service.qml" "$SRC/hypr.lua" \
+    "$SRC/omarchy-game-focus" "$SRC/install.sh" "$SRC/uninstall.sh" "$PLUGIN_DIR/"
+  cp -f "$SRC/extensions/omarchy-menu.snippet.jsonc" "$PLUGIN_DIR/extensions/"
+  cp -f "$SRC/README.md" "$SRC/LICENSE" "$PLUGIN_DIR/" 2>/dev/null || true
+  chmod +x "$PLUGIN_DIR/omarchy-game-focus" "$PLUGIN_DIR"/*.sh
+fi
+
+echo "==> 3. Adding the loader to $HYPRLAND_LUA"
+if grep -q "$MARKER" "$HYPRLAND_LUA"; then
+  echo "    already present"
+else
+  cp "$HYPRLAND_LUA" "$HYPRLAND_LUA.bak.$(date +%s)"
+  # Guarded on the file existing, so removing the plugin cannot break the
+  # Hyprland config -- while a plugin that is present but broken still errors
+  # loudly instead of failing silently.
+  cat >>"$HYPRLAND_LUA" <<'LUA'
+
+-- Game Focus (omarchy-game-focus)
+local game_focus = os.getenv("HOME") .. "/.config/omarchy/plugins/pashadev.game-focus/hypr.lua"
+if io.open(game_focus) then dofile(game_focus) end
+LUA
+  echo "    added"
+fi
+
+echo "==> 4. Adding the menu row to $MENU"
+if [[ -f $MENU ]] && grep -q "trigger.toggle.game-focus" "$MENU"; then
+  echo "    already present"
+else
+  mkdir -p "$(dirname "$MENU")"
+  [[ -f $MENU ]] || printf '{\n}\n' >"$MENU"
+  cp "$MENU" "$MENU.bak.$(date +%s)"
+  # Splice before the final closing brace.
+  python3 - "$MENU" "$SRC/extensions/omarchy-menu.snippet.jsonc" <<'PY'
+import sys, pathlib
+menu, snippet = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]).read_text()
+text = menu.read_text()
+idx = text.rstrip().rfind("}")
+menu.write_text(text[:idx] + snippet + text[idx:])
+PY
+  echo "    added"
+fi
+
+echo "==> 5. Linking the CLI into $BIN_DIR"
+mkdir -p "$BIN_DIR"
+ln -sf "$PLUGIN_DIR/omarchy-game-focus" "$BIN_DIR/omarchy-game-focus"
+
+echo "==> 6. Enabling and restarting the shell"
+# Quickshell keeps a compiled QML cache that survives rescanPlugins, so a
+# freshly installed Service.qml can otherwise be ignored in favour of an old one.
+rm -rf "$HOME/.cache/quickshell/qmlcache" 2>/dev/null || true
+omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
+omarchy plugin enable "$PLUGIN_ID" >/dev/null 2>&1 || true
+omarchy restart shell >/dev/null 2>&1 || echo "    run 'omarchy restart shell' by hand"
+
+echo
+echo "Game Focus installed."
+echo "  Toggle the mode : SUPER + F12"
+echo "  Turn it off     : omarchy-game-focus disable"
+echo "  Check it        : omarchy-game-focus status"
+[[ ":$PATH:" == *":$BIN_DIR:"* ]] || echo "  NOTE: $BIN_DIR is not on your PATH"
