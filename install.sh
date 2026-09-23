@@ -16,7 +16,6 @@ PLUGIN_DIR="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
 HYPRLAND_LUA="$HOME/.config/hypr/hyprland.lua"
 MENU="$HOME/.config/omarchy/extensions/omarchy-menu.jsonc"
 BIN_DIR="$HOME/.local/bin"
-MARKER="omarchy-game-focus" # identifies our lines in files we share with others
 
 echo "==> 1. Validating the plugin"
 omarchy plugin validate "$SRC"
@@ -35,7 +34,7 @@ if [[ $SRC != "$PLUGIN_DIR" ]]; then
 fi
 
 echo "==> 3. Adding the loader to $HYPRLAND_LUA"
-if grep -q "$MARKER" "$HYPRLAND_LUA"; then
+if grep -qF "$PLUGIN_ID/hypr.lua" "$HYPRLAND_LUA"; then
   echo "    already present"
 else
   cp "$HYPRLAND_LUA" "$HYPRLAND_LUA.bak.$(date +%s)"
@@ -58,13 +57,16 @@ else
   mkdir -p "$(dirname "$MENU")"
   [[ -f $MENU ]] || printf '{\n}\n' >"$MENU"
   cp "$MENU" "$MENU.bak.$(date +%s)"
-  # Splice before the final closing brace.
+  # Splice in right after the opening brace. The row's own trailing comma is
+  # fine there -- the menu parser drops trailing commas -- whereas before the
+  # closing brace it would follow the user's last row, and a missing comma on
+  # that row makes the whole file unparseable, which empties their menu.
   python3 - "$MENU" "$SRC/extensions/omarchy-menu.snippet.jsonc" <<'PY'
-import sys, pathlib
+import sys, pathlib, re
 menu, snippet = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]).read_text()
 text = menu.read_text()
-idx = text.rstrip().rfind("}")
-menu.write_text(text[:idx] + snippet + text[idx:])
+idx = re.search(r"^\s*\{", text, re.M).end()
+menu.write_text(text[:idx] + "\n" + snippet.rstrip("\n") + text[idx:])
 PY
   echo "    added"
 fi
@@ -73,13 +75,18 @@ echo "==> 5. Linking the CLI into $BIN_DIR"
 mkdir -p "$BIN_DIR"
 ln -sf "$PLUGIN_DIR/omarchy-game-focus" "$BIN_DIR/omarchy-game-focus"
 
-echo "==> 6. Enabling and restarting the shell"
-# Quickshell keeps a compiled QML cache that survives rescanPlugins, so a
-# freshly installed Service.qml can otherwise be ignored in favour of an old one.
-rm -rf "$HOME/.cache/quickshell/qmlcache" 2>/dev/null || true
-omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
-omarchy plugin enable "$PLUGIN_ID" >/dev/null 2>&1 || true
-omarchy restart shell >/dev/null 2>&1 || echo "    run 'omarchy restart shell' by hand"
+echo "==> 6. Reloading Hyprland and enabling"
+# Hyprland watches its own config files, not hypr.lua, so a re-run only takes
+# effect after a reload.
+hyprctl reload >/dev/null
+# rescanPlugins returns before the scan does, and enabling an id the shell hasn't
+# seen yet fails; wait for it the way omarchy-plugin-add does.
+omarchy-shell shell rescanPlugins >/dev/null
+for _ in $(seq 1 40); do
+  omarchy-plugin-list --json | jq -e --arg id "$PLUGIN_ID" 'any(.[]; .id == $id)' >/dev/null && break
+  sleep 0.05
+done
+"$PLUGIN_DIR/omarchy-game-focus" enable
 
 echo
 echo "Game Focus installed."

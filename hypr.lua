@@ -7,19 +7,32 @@
 -- pashadev.game-focus is enabled.
 -- ---------------------------------------------------------------------------
 
-local PLUGIN_DIR = os.getenv("HOME") .. "/.config/omarchy/plugins/pashadev.game-focus"
-local CLI = PLUGIN_DIR .. "/omarchy-game-focus"
+local HOME = os.getenv("HOME")
+local SHELL_JSON = HOME .. "/.config/omarchy/shell.json"
+-- omarchy-toggle's flag directory. It hardcodes ~/.local/state, so this does too.
+local TOGGLES = HOME .. "/.local/state/omarchy/toggles/"
+local INSTANCE = os.getenv("HYPRLAND_INSTANCE_SIGNATURE")
 
--- Globals outlive a reload (Omarchy's bootstrap.lua only clears package.loaded),
--- so clear the CLI entry point first: otherwise a disabled plugin leaves the
--- previous load's closures reachable and `omarchy-game-focus on` drives a stale
--- copy of the state.
-_G.omarchy_game_focus = nil
+-- Everything this file checks at runtime is read in-process, never by spawning
+-- a command: this runs on Hyprland's main thread, where even a quick shell-out
+-- (o.shell_succeeds) freezes the screen for as long as it takes.
+local function read_file(path)
+  local file = io.open(path)
+  if not file then
+    return nil
+  end
+
+  local text = file:read("*a")
+  file:close()
+  return text
+end
 
 -- A third-party plugin is enabled iff its id is in shell.json, which is what
--- `omarchy plugin enable|disable` writes. The CLI answers that question.
+-- `omarchy plugin enable|disable` writes -- the same rule as the CLI's
+-- is_enabled, and like it this fails open.
 local function plugin_enabled()
-  return o.shell_succeeds(o.shell_quote(CLI) .. " is-enabled")
+  local text = read_file(SHELL_JSON)
+  return not text or text:find('"id"%s*:%s*"pashadev%.game%-focus"') ~= nil
 end
 
 if not plugin_enabled() then
@@ -64,8 +77,11 @@ local GAME_CONFIG = {
 }
 
 -- Flags under ~/.local/state/omarchy/toggles/. They exist so the mode survives
--- `hyprctl reload`, which wipes this file's locals and resets the submap --
+-- `hyprctl reload`, which rebuilds this Lua state (though not the submap) --
 -- without them, editing any hypr config mid-game would silently un-protect you.
+-- Each flag holds the instance signature of the Hyprland that set it: a reload
+-- keeps the instance, a crash or reboot starts a new one, so a flag naming
+-- another instance is a leftover to clean up rather than a mode to restore.
 local ARMED_FLAG = "game-focus"
 local HID_BAR_FLAG = "game-focus-hid-bar"
 
@@ -85,16 +101,24 @@ local state = {
   saved = nil, -- config values captured at arm time
   hid_bar = nil,
   disarm_generation = 0, -- bumped to cancel a pending auto-disarm
+  dismissed = nil, -- stable_id of a game you switched off by hand
 }
 
 -- --- Helpers ---------------------------------------------------------------
 
 local function flag_set(name)
-  return o.shell_succeeds("omarchy-toggle-enabled " .. o.shell_quote(name))
+  return read_file(TOGGLES .. name) ~= nil
 end
 
 local function set_flag(name, on)
-  hl.exec_cmd("omarchy-toggle " .. o.shell_quote(name) .. " " .. (on and "on" or "off"))
+  local path = o.shell_quote(TOGGLES .. name)
+  if on then
+    hl.exec_cmd(
+      "mkdir -p " .. o.shell_quote(TOGGLES) .. " && printf %s " .. o.shell_quote(INSTANCE) .. " >" .. path
+    )
+  else
+    hl.exec_cmd("rm -f " .. path)
+  end
 end
 
 -- Careful: omarchy-toggle-bar's argument names the state of a flag called
@@ -113,23 +137,44 @@ local function notify(headline, description)
   )
 end
 
--- GAME_CONFIG is keyed by dotted path because that is what hl.get_config takes;
--- hl.config wants it nested. Expand one into the other.
-local function set_config(key, value)
-  local parts = {}
-  for part in key:gmatch("[^.]+") do
-    parts[#parts + 1] = part
+-- The part of disarming that outlives this Lua state: the submap, the bar and
+-- the flags. The CLI's force_unpick is the same thing from outside.
+local function unpick(hid_bar)
+  hl.dispatch(hl.dsp.submap("reset"))
+  if hid_bar then
+    set_bar_hidden(false)
+  end
+  set_flag(HID_BAR_FLAG, false)
+  set_flag(ARMED_FLAG, false)
+end
+
+-- The window rules at the bottom tag every matching window "game", so Hyprland
+-- does the class matching and this only reads the result. Dynamic tags carry a
+-- trailing "*" (see default/hypr/bindings/clipboard.lua).
+local function is_game(window)
+  if not window then
+    return false
   end
 
-  local root, node = {}, nil
-  node = root
-  for index = 1, #parts - 1 do
-    node[parts[index]] = {}
-    node = node[parts[index]]
+  if window.content_type == "game" then
+    return true
   end
-  node[parts[#parts]] = value
 
-  hl.config(root)
+  for _, tag in ipairs(window.tags or {}) do
+    if tag:gsub("%*$", "") == "game" then
+      return true
+    end
+  end
+
+  return false
+end
+
+-- The focused window, if it is a fullscreen game you haven't switched off by hand.
+local function playing_now()
+  local window = hl.get_active_window()
+  if is_game(window) and window.fullscreen ~= 0 and window.stable_id ~= state.dismissed then
+    return window
+  end
 end
 
 -- Forward declaration: the submap below binds a callback that calls disarm, and
@@ -193,25 +238,25 @@ function arm(by, quiet)
   state.armed = true
   state.armed_by = by
   state.disarm_generation = state.disarm_generation + 1 -- cancels a pending disarm
-
-  state.saved = {}
-  for key, value in pairs(GAME_CONFIG) do
-    state.saved[key] = hl.get_config(key)
-    set_config(key, value)
+  if by == "manual" then
+    state.dismissed = nil
   end
+
+  -- hl.config takes the same dotted keys hl.get_config does.
+  state.saved = {}
+  for key in pairs(GAME_CONFIG) do
+    state.saved[key] = hl.get_config(key)
+  end
+  hl.config(GAME_CONFIG)
 
   -- Only hide the bar if it isn't already hidden, so disarming can't reveal a
   -- bar you had deliberately turned off. Recorded on disk too: a reload mid-game
   -- wipes the locals but not the bar, so if the flag is already there we are
   -- recovering from one and the bar is hidden because we hid it.
-  if flag_set(HID_BAR_FLAG) then
-    state.hid_bar = true
-  else
-    state.hid_bar = not flag_set("bar-off")
-    if state.hid_bar then
-      set_bar_hidden(true)
-      set_flag(HID_BAR_FLAG, true)
-    end
+  state.hid_bar = flag_set(HID_BAR_FLAG) or not flag_set("bar-off")
+  if state.hid_bar then
+    set_bar_hidden(true)
+    set_flag(HID_BAR_FLAG, true)
   end
 
   set_flag(ARMED_FLAG, true)
@@ -233,21 +278,15 @@ function disarm(by, quiet)
     return
   end
 
-  hl.dispatch(hl.dsp.submap("reset"))
-
-  for key, value in pairs(state.saved or {}) do
-    set_config(key, value)
+  -- Switched off by hand mid-game: leave this window alone until you arm by hand
+  -- again, or the next focus change would re-arm it straight away.
+  if by == "manual" then
+    local game = playing_now()
+    state.dismissed = game and game.stable_id
   end
 
-  local hid_bar = state.hid_bar
-  if hid_bar == nil then
-    hid_bar = flag_set(HID_BAR_FLAG)
-  end
-  if hid_bar then
-    set_bar_hidden(false)
-  end
-  set_flag(HID_BAR_FLAG, false)
-  set_flag(ARMED_FLAG, false)
+  hl.config(state.saved)
+  unpick(state.hid_bar)
 
   state.armed = false
   state.armed_by = nil
@@ -273,32 +312,6 @@ end
 o.bind(TOGGLE_KEY, "Toggle game focus mode", toggle, { submap_universal = true })
 
 -- --- Auto-detection --------------------------------------------------------
-
--- The window rules at the bottom tag every matching window "game", so Hyprland
--- does the class matching and this only reads the result. Dynamic tags carry a
--- trailing "*" (see default/hypr/bindings/clipboard.lua).
-local function is_game(window)
-  if not window then
-    return false
-  end
-
-  if window.content_type == "game" then
-    return true
-  end
-
-  for _, tag in ipairs(window.tags or {}) do
-    if tag:gsub("%*$", "") == "game" then
-      return true
-    end
-  end
-
-  return false
-end
-
-local function playing_now()
-  local window = hl.get_active_window()
-  return is_game(window) and window.fullscreen ~= 0
-end
 
 local function reevaluate()
   if playing_now() then
@@ -337,9 +350,15 @@ end
 -- because the window rules below have not been applied yet at this point in the
 -- config load, so the "game" tag this depends on would not be there to read.
 hl.timer(function()
-  if flag_set(ARMED_FLAG) then
-    -- Recovering from a reload that happened while armed: the submap has reset
-    -- and the locals are gone, but the flag survived. Attribute it to the
+  local armed_by = read_file(TOGGLES .. ARMED_FLAG)
+  if armed_by and armed_by ~= INSTANCE then
+    -- Left by a Hyprland that crashed or lost power while armed. Its config
+    -- died with it; the hidden bar and the flags carry over. Don't start the new
+    -- session locked in.
+    unpick(flag_set(HID_BAR_FLAG))
+  elseif armed_by then
+    -- Recovering from a reload that happened while armed: the locals are gone,
+    -- but the flag survived. Attribute it to the
     -- watcher when a game is on screen, so it still disarms by itself when the
     -- game ends; recovering as "manual" would leave you stuck after quitting.
     arm(AUTO_DETECT and playing_now() and "auto" or "manual", true)

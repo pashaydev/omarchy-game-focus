@@ -83,37 +83,56 @@ disarm_if_armed() {
   mode off || force_unpick
 }
 
-# enable and disable differ only in direction and in disarming first.
-set_enabled() {
-  local want="$1" verb="$2"
-  if [[ $want == true ]] && is_enabled; then
-    echo "Game Focus is already enabled."
-    return 0
-  fi
-  if [[ $want == false ]]; then
-    is_enabled || {
-      echo "Game Focus is already disabled."
-      return 0
+# The shell updates its registry in memory -- starting or stopping the service in
+# the same instant -- and writes shell.json a moment later. hypr.lua reads the
+# file, so reloading Hyprland before the write lands loads the old answer.
+await_registry() {
+  local want="$1" now
+  for _ in $(seq 1 25); do
+    is_enabled 2>/dev/null && now=true || now=false
+    [[ $now == "$want" ]] && return 0
+    sleep 0.2
+  done
+  echo "the registry never showed $PLUGIN_ID as enabled=$want" >&2
+  return 1
+}
+
+# Make Hyprland agree with the registry, whichever way they disagree. Reloading
+# is what loads or drops the module: its config calls either run or stop running.
+reconcile() {
+  if is_enabled; then
+    is_loaded && echo "already in sync (enabled, loaded)" && return 0
+    hyprctl reload >/dev/null
+    is_loaded || {
+      echo "reloaded, but hypr.lua did not load; is its loader in hyprland.lua?" >&2
+      return 1
     }
-    # Disarm while the module is still loaded to undo its own changes.
+    echo "loaded into Hyprland"
+  else
+    # Even when not loaded: it clears whatever a wedged module left behind.
     disarm_if_armed
+    is_loaded || { echo "already in sync (disabled, not loaded)" && return 0; }
+    hyprctl reload >/dev/null
+    echo "unloaded from Hyprland"
   fi
-  omarchy plugin "$verb" "$PLUGIN_ID" >/dev/null || {
-    echo "could not $verb $PLUGIN_ID; try: omarchy-shell shell rescanPlugins" >&2
-    return 1
-  }
-  # Reloading is what loads or drops the module: its config calls either run or
-  # stop running.
-  hyprctl reload >/dev/null
+}
+
+# `omarchy plugin enable|disable` is idempotent, so these need no "already" case.
+set_enabled() {
+  omarchy plugin "$1" "$PLUGIN_ID" >/dev/null &&
+    await_registry "$2" &&
+    reconcile >/dev/null
 }
 
 case "${1:-status}" in
 enable)
-  set_enabled true enable && echo "Game Focus enabled. Toggle the mode with SUPER + F12."
+  set_enabled enable true && echo "Game Focus enabled. Toggle the mode with SUPER + F12."
   ;;
 
 disable)
-  set_enabled false disable && echo "Game Focus disabled. Nothing from it is loaded."
+  # While the module is still loaded, so it undoes its own changes.
+  disarm_if_armed
+  set_enabled disable false && echo "Game Focus disabled. Nothing from it is loaded."
   ;;
 
 toggle-enabled)
@@ -124,36 +143,14 @@ is-enabled)
   is_enabled
   ;;
 
-# Called by the shell service on load. The service running is itself proof that
-# the plugin is enabled, so this does NOT re-check the registry to decide: the
-# shell instantiates the component in the same instant it writes shell.json, and
-# reading it here loses that race and reports "disabled" every time. It does
-# still wait for the write, because hypr.lua reads the same file -- reloading
-# early would just load a module that decides it is disabled.
+# Called by the shell service on load. The service running means enabled, but
+# shell.json may not say so yet; see await_registry.
 ensure-loaded)
-  for _ in $(seq 1 25); do
-    is_enabled 2>/dev/null && break
-    sleep 0.2
-  done
-  is_enabled 2>/dev/null || {
-    echo "service started but the registry never showed it enabled" >&2
-    exit 1
-  }
-  exec "$0" reconcile
+  await_registry true && reconcile
   ;;
 
-# Make Hyprland agree with the registry, whichever way they disagree.
 reconcile)
-  if is_enabled; then
-    is_loaded && echo "already in sync (enabled, loaded)" && exit 0
-    hyprctl reload >/dev/null
-    echo "loaded into Hyprland"
-  else
-    is_loaded || { echo "already in sync (disabled, not loaded)" && exit 0; }
-    disarm_if_armed
-    hyprctl reload >/dev/null
-    echo "unloaded from Hyprland"
-  fi
+  reconcile
   ;;
 
 status)

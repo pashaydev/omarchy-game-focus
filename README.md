@@ -26,7 +26,7 @@ not re-declared inside it falls through to the game. Nothing is permanently
 unbound.
 
 **Kept while armed:** media/volume/brightness keys, `PRINT` and `ALT + PRINT`,
-`SUPER + 1…9` and `SUPER + TAB`, and `SUPER + CTRL + ALT + W` to close a hung
+`SUPER + 1…0` and `SUPER + [SHIFT +] TAB`, and `SUPER + CTRL + ALT + W` to close a hung
 game. Everything else goes to the game, `ALT + TAB` included.
 
 Animations, blur, shadows, rounding, dimming and cursor zoom are switched off
@@ -49,7 +49,8 @@ sessions.
 
 Auto-detection fires on a window matching `GAME_CLASSES` or reporting
 `content_type = "game"` (SDL3 and Proton titles do). A mode you armed by hand is
-never auto-disarmed.
+never auto-disarmed, and one you switched off by hand stays off for that game
+window until you arm it by hand again.
 
 ## Install
 
@@ -68,7 +69,8 @@ cd omarchy-game-focus && ./install.sh
 `install.sh` copies the plugin into place, adds a guarded loader line to
 `~/.config/hypr/hyprland.lua`, splices a **Toggle → Game Focus** row into the
 Omarchy menu, links the CLI onto your `PATH`, and enables the plugin. It backs
-up every file it edits and is safe to re-run. `./uninstall.sh` reverses all of it.
+up every file it edits and is safe to re-run. `./uninstall.sh` reverses all of it;
+`omarchy plugin remove` only deletes the plugin directory.
 
 Requires Omarchy 4 (tested on 4.0.4) and Hyprland 0.56+, for the Lua config API.
 
@@ -102,7 +104,8 @@ matched in exactly one place — the window rules, which tag matching windows
 `game`. The Lua never matches classes itself; it reads that tag.
 
 Re-run `./install.sh` after editing: the plugin directory holds a copy, because
-`omarchy-plugin-validate` rejects symlinks inside it.
+`omarchy-plugin-validate` rejects symlinks inside it, and Hyprland doesn't watch
+`hypr.lua` — after `omarchy plugin update`, run `hyprctl reload`.
 
 ## If it gets stuck
 
@@ -127,9 +130,13 @@ anything, so `hypr.lua` polls the registry every 10s and unloads itself.
   `bar-off`, so `omarchy-toggle-bar on` **hides** the bar.
 - Auto-disarm is debounced 600ms; without it a notification stealing focus for
   an instant drops the mode mid-game.
-- Quickshell caches compiled QML. After editing `Service.qml`, `rescanPlugins`
-  is not enough — clear `~/.cache/quickshell/qmlcache`, `omarchy restart shell`,
-  then check `journalctl --user | grep game-focus:`.
+- `hypr.lua` runs on Hyprland's main thread, which is why it reads `shell.json`
+  and the flags itself instead of shelling out: even `o.shell_succeeds` freezes
+  the screen for as long as the command takes.
+- `hyprctl reload` rebuilds the Lua state but keeps the active submap; a crash or
+  reboot keeps neither, which is why the flags record the Hyprland instance.
+- The service isn't `keepLoaded`, so an edited `Service.qml` applies on the next
+  plugin hot-reload; check `journalctl --user | grep game-focus:`.
 
 ## License
 

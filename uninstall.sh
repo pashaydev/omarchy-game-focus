@@ -11,14 +11,9 @@ MENU="$HOME/.config/omarchy/extensions/omarchy-menu.jsonc"
 BIN_DIR="$HOME/.local/bin"
 
 echo "==> 1. Disarming and disabling"
-# While the module is still loaded it can undo its own changes; force_unpick in
-# the CLI covers the case where it cannot.
-"$PLUGIN_DIR/omarchy-game-focus" off >/dev/null 2>&1 || true
-omarchy plugin disable "$PLUGIN_ID" >/dev/null 2>&1 || true
-omarchy-toggle game-focus off 2>/dev/null || true
-omarchy-toggle-enabled game-focus-hid-bar && omarchy-toggle-bar off
-omarchy-toggle game-focus-hid-bar off 2>/dev/null || true
-hyprctl dispatch 'hl.dsp.submap("reset")' >/dev/null 2>&1 || true
+# The CLI disarms while the module is still loaded, so it undoes its own
+# changes, and unpicks them by hand when it cannot.
+"$PLUGIN_DIR/omarchy-game-focus" disable || echo "    could not disable cleanly; removing anyway"
 
 echo "==> 2. Removing the loader from $HYPRLAND_LUA"
 if grep -q "omarchy-game-focus" "$HYPRLAND_LUA" 2>/dev/null; then
@@ -55,10 +50,8 @@ rm -f "$BIN_DIR/omarchy-game-focus"
 rm -rf "$PLUGIN_DIR"
 
 echo "==> 5. Reloading"
-rm -rf "$HOME/.cache/quickshell/qmlcache" 2>/dev/null || true
 hyprctl reload >/dev/null 2>&1 || true
 omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
-omarchy restart shell >/dev/null 2>&1 || true
 
 echo
 echo "Game Focus removed. Backups of edited files are alongside them as *.bak.*"
