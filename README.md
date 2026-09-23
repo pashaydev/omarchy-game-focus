@@ -93,6 +93,26 @@ omarchy-game-focus on|off|toggle   # arm now, without unloading anything
 Disabled means `hypr.lua` returns on its first lines: no submap, no bindings, no
 window rules, no event handlers, no drag-threshold change.
 
+## Bar indicator
+
+A small gamepad in the bar, styled like Omarchy's own status indicators: dimmed
+while Game Focus is off, lit while it's watching for games. There's no "armed"
+look — arming hides the bar, so the bar going away is that signal.
+
+Click turns Game Focus on or off; right-click arms it now. It's a plugin of its
+own, `pashadev.game-focus-indicator`, so moving or removing it never touches Game
+Focus. `install.sh` asks where it goes the first time; after that:
+
+```bash
+./install.sh right                  # or left | center | none
+omarchy bar move pashadev.game-focus-indicator --section left
+omarchy bar set pashadev.game-focus-indicator icon 󰮂
+omarchy bar set pashadev.game-focus-indicator hideWhenOff true --json
+```
+
+`icon` takes any Nerd Font glyph; `hideWhenOff` takes it off the bar while Game
+Focus is disabled instead of dimming it.
+
 ## Configuring
 
 Everything tunable is at the top of `hypr.lua`: `TOGGLE_KEY`, `AUTO_DETECT`,
@@ -105,7 +125,7 @@ matched in exactly one place — the window rules, which tag matching windows
 
 Re-run `./install.sh` after editing: the plugin directory holds a copy, because
 `omarchy-plugin-validate` rejects symlinks inside it, and Hyprland doesn't watch
-`hypr.lua` — after `omarchy plugin update`, run `hyprctl reload`.
+`hypr.lua` — after `omarchy plugin update`, re-run `./install.sh` too.
 
 ## If it gets stuck
 

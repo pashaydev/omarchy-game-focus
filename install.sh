@@ -2,9 +2,12 @@
 
 # Install Game Focus.
 #
+# Usage: ./install.sh [left|center|right|none]   (where the bar indicator goes)
+#
 # Most of the plugin is just the plugin directory, which `omarchy plugin add`
-# already puts in place. This script does the three things that live outside it:
-# the hyprland.lua loader line, the menu row, and a CLI symlink on PATH.
+# already puts in place. This script does the things that live outside it: the
+# hyprland.lua loader line, the menu row, a CLI symlink on PATH, and the bar
+# indicator, which is a plugin of its own.
 #
 # Safe to re-run; every step is idempotent.
 
@@ -16,22 +19,36 @@ PLUGIN_DIR="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
 HYPRLAND_LUA="$HOME/.config/hypr/hyprland.lua"
 MENU="$HOME/.config/omarchy/extensions/omarchy-menu.jsonc"
 BIN_DIR="$HOME/.local/bin"
+SHELL_JSON="$HOME/.config/omarchy/shell.json"
+# Its own plugin, so moving or removing the icon never touches Game Focus.
+INDICATOR_ID="pashadev.game-focus-indicator"
+INDICATOR_DIR="$HOME/.config/omarchy/plugins/$INDICATOR_ID"
+
+SECTION="${1:-}"
+[[ $SECTION =~ ^(left|center|right|none)?$ ]] || {
+  echo "Usage: $0 [left|center|right|none]" >&2
+  exit 1
+}
 
 echo "==> 1. Validating the plugin"
 omarchy plugin validate "$SRC"
+omarchy plugin validate "$SRC/indicator"
 
 echo "==> 2. Installing to $PLUGIN_DIR"
 if [[ $SRC != "$PLUGIN_DIR" ]]; then
   # Copy, never symlink: omarchy-plugin-validate rejects symlinks inside a
   # plugin directory. When `omarchy plugin add` cloned us we are already here,
   # and this is skipped.
-  mkdir -p "$PLUGIN_DIR/extensions"
+  mkdir -p "$PLUGIN_DIR/extensions" "$PLUGIN_DIR/indicator"
   cp -f "$SRC/manifest.json" "$SRC/Service.qml" "$SRC/hypr.lua" \
     "$SRC/omarchy-game-focus" "$SRC/install.sh" "$SRC/uninstall.sh" "$PLUGIN_DIR/"
   cp -f "$SRC/extensions/omarchy-menu.snippet.jsonc" "$PLUGIN_DIR/extensions/"
+  cp -f "$SRC/indicator/manifest.json" "$SRC/indicator/BarWidget.qml" "$PLUGIN_DIR/indicator/"
   cp -f "$SRC/README.md" "$SRC/LICENSE" "$PLUGIN_DIR/" 2>/dev/null || true
   chmod +x "$PLUGIN_DIR/omarchy-game-focus" "$PLUGIN_DIR"/*.sh
 fi
+mkdir -p "$INDICATOR_DIR"
+cp -f "$SRC/indicator/manifest.json" "$SRC/indicator/BarWidget.qml" "$INDICATOR_DIR/"
 
 echo "==> 3. Adding the loader to $HYPRLAND_LUA"
 if grep -qF "$PLUGIN_ID/hypr.lua" "$HYPRLAND_LUA"; then
@@ -83,10 +100,36 @@ hyprctl reload >/dev/null
 # seen yet fails; wait for it the way omarchy-plugin-add does.
 omarchy-shell shell rescanPlugins >/dev/null
 for _ in $(seq 1 40); do
-  omarchy-plugin-list --json | jq -e --arg id "$PLUGIN_ID" 'any(.[]; .id == $id)' >/dev/null && break
+  omarchy-plugin-list --json |
+    jq -e --arg a "$PLUGIN_ID" --arg b "$INDICATOR_ID" '[.[].id] | index($a) and index($b)' >/dev/null && break
   sleep 0.05
 done
 "$PLUGIN_DIR/omarchy-game-focus" enable
+
+echo "==> 7. Placing the indicator"
+on_bar() {
+  jq -e --arg id "$INDICATOR_ID" 'any(.bar.layout[]?[]?; .id? == $id)' "$SHELL_JSON" >/dev/null
+}
+# Asked only the first time; after that an argument moves it.
+if [[ -z $SECTION ]] && ! on_bar; then
+  SECTION=center
+  if [[ -t 0 && -t 1 ]]; then
+    SECTION=$(gum choose --header "Where should the Game Focus indicator go?" \
+      --selected center left center right none) || SECTION=none
+  fi
+fi
+case $SECTION in
+"") echo "    already on the bar; move it with: ./install.sh left|center|right" ;;
+none) omarchy plugin disable "$INDICATOR_ID" >/dev/null && echo "    not on the bar" ;;
+*)
+  if on_bar; then
+    omarchy bar move "$INDICATOR_ID" --section "$SECTION" >/dev/null
+  else
+    omarchy plugin enable "$INDICATOR_ID" --section "$SECTION" >/dev/null
+  fi
+  echo "    $SECTION"
+  ;;
+esac
 
 echo
 echo "Game Focus installed."

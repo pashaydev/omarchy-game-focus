@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "pashadev.game-focus-indicator",
+  "name": "Game Focus indicator",
+  "version": "1.0.0",
+  "author": "pashadev",
+  "license": "MIT",
+  "description": "Bar icon for Game Focus: dimmed while it is off, lit while it is watching for games. Click turns Game Focus on or off; right click arms it now.",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "BarWidget.qml" },
+  "barWidget": {
+    "displayName": "Game Focus",
+    "description": "Dimmed while Game Focus is off, lit while it is watching for games.",
+    "category": "Status",
+    "defaultSection": "center",
+    "allowMultiple": false,
+    "defaults": { "icon": "󰊴", "hideWhenOff": false },
+    "schema": [
+      { "key": "icon", "type": "string", "label": "Icon", "defaultValue": "󰊴", "description": "Any Nerd Font glyph." },
+      { "key": "hideWhenOff", "type": "boolean", "label": "Hide when off", "defaultValue": false, "description": "Take the icon off the bar while Game Focus is disabled, instead of dimming it." }
+    ]
+  }
+}

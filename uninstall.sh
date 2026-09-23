@@ -9,8 +9,10 @@ PLUGIN_DIR="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
 HYPRLAND_LUA="$HOME/.config/hypr/hyprland.lua"
 MENU="$HOME/.config/omarchy/extensions/omarchy-menu.jsonc"
 BIN_DIR="$HOME/.local/bin"
+INDICATOR_ID="pashadev.game-focus-indicator"
 
 echo "==> 1. Disarming and disabling"
+omarchy plugin disable "$INDICATOR_ID" >/dev/null 2>&1 || true
 # The CLI disarms while the module is still loaded, so it undoes its own
 # changes, and unpicks them by hand when it cannot.
 "$PLUGIN_DIR/omarchy-game-focus" disable || echo "    could not disable cleanly; removing anyway"
@@ -45,9 +47,9 @@ PY
   echo "    removed"
 fi
 
-echo "==> 4. Removing the CLI symlink and plugin directory"
+echo "==> 4. Removing the CLI symlink and plugin directories"
 rm -f "$BIN_DIR/omarchy-game-focus"
-rm -rf "$PLUGIN_DIR"
+rm -rf "$PLUGIN_DIR" "$HOME/.config/omarchy/plugins/$INDICATOR_ID"
 
 echo "==> 5. Reloading"
 hyprctl reload >/dev/null 2>&1 || true
